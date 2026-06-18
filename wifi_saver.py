@@ -37,20 +37,25 @@ tray_icon = None
 stop_event = threading.Event()
 
 
-# ── Wi-Fi helpers ─────────────────────────────────────────────────────────────
+# ── Wi-Fi helpers ─────────────────────────────────────────────────────────────────────────────────
+
+
+def _run_netsh(*args) -> str:
+    """Run a netsh command and return its output, suppressing any window."""
+    result = subprocess.run(
+        ["netsh", *args],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    return result.stdout
 
 
 def get_current_bssid() -> str | None:
     """Return the BSSID of the currently connected Wi-Fi AP, or None."""
     try:
-        result = subprocess.run(
-            ["netsh", "wlan", "show", "interfaces"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-        for line in result.stdout.splitlines():
+        for line in _run_netsh("wlan", "show", "interfaces").splitlines():
             stripped = line.strip()
             if stripped.startswith("AP BSSID"):
                 parts = stripped.split(":", 1)
@@ -59,6 +64,19 @@ def get_current_bssid() -> str | None:
     except Exception:
         pass
     return None
+
+
+def is_target_ap_visible() -> bool:
+    """Return True if the target SSID/BSSID is visible in a nearby network scan."""
+    try:
+        output = _run_netsh("wlan", "show", "networks", "mode=bssid")
+        for line in output.splitlines():
+            normalised = line.strip().replace(":", "").upper()
+            if TARGET_BSSID.replace(":", "").upper() in normalised:
+                return True
+    except Exception:
+        pass
+    return False
 
 
 def trigger_connect():
@@ -75,11 +93,11 @@ def trigger_connect():
         last_action = f"Error launching: {e}"
 
 
-# ── Icon drawing ──────────────────────────────────────────────────────────────
+# ── Icon drawing ──────────────────────────────────────────────────────────────────────────────────
 
 
 def make_icon(connected: bool) -> Image.Image:
-    """Draw a tiny 64×64 Wi-Fi symbol — green when connected, red when not."""
+    """Draw a tiny 64x64 Wi-Fi symbol — green when connected, red when not."""
     size = 64
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -96,7 +114,7 @@ def make_icon(connected: bool) -> Image.Image:
     return img
 
 
-# ── Watcher thread ────────────────────────────────────────────────────────────
+# ── Watcher thread ─────────────────────────────────────────────────────────────────────────────────
 
 
 def watcher():
@@ -107,9 +125,13 @@ def watcher():
 
         if connected:
             status_message = f"✓ Connected to correct AP ({TARGET_BSSID})"
-        else:
-            status_message = f"✗ Wrong AP (on: {bssid or 'none'}, want: {TARGET_BSSID})"
+        elif is_target_ap_visible():
+            status_message = (
+                f"✗ Wrong AP (on: {bssid or 'none'}) — target in range, reconnecting…"
+            )
             trigger_connect()
+        else:
+            status_message = f"⏸ Target AP not in range — standing by"
 
         # Update tray icon and tooltip
         if tray_icon is not None:
@@ -119,7 +141,7 @@ def watcher():
         stop_event.wait(CHECK_INTERVAL)
 
 
-# ── Tray menu ─────────────────────────────────────────────────────────────────
+# ── Tray menu ──────────────────────────────────────────────────────────────────────────────────────
 
 
 def menu_status(icon, item):
@@ -140,7 +162,7 @@ def menu_quit(icon, item):
     icon.stop()
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# ── Entry point ────────────────────────────────────────────────────────────────────────────────────
 
 
 def main():
